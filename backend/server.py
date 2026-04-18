@@ -245,6 +245,16 @@ async def process_trade(alert: Alert, parsed: dict):
             # Real order — place with broker, store as "pending", start fill monitor
             trade.status = "pending"
             order_id = None
+            
+            # Apply price buffer for safety (default 3% below entry)
+            limit_price = alert.entry_price
+            buffer_applied = 0.0
+            if settings.premium_buffer_enabled:
+                buffer_pct = settings.premium_buffer_amount / 100  # Convert cents to decimal
+                limit_price = round(alert.entry_price * (1 - buffer_pct), 2)
+                buffer_applied = alert.entry_price - limit_price
+                logger.info(f"[process_trade] applying buffer: ${buffer_applied:.2f} (limit: ${limit_price})")
+            
             try:
                 from broker_clients import get_broker_client
                 broker_cfg = settings.broker_configs.get(settings.active_broker.value)
@@ -257,7 +267,7 @@ async def process_trade(alert: Alert, parsed: dict):
                         expiration=alert.expiration,
                         side="BUY",
                         quantity=quantity,
-                        price=alert.entry_price,
+                        price=limit_price,  # Use buffered price
                     )
                     order_id = order_result.get("order_id")
                     trade.order_id = order_id
