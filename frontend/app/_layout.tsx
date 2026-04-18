@@ -6,10 +6,12 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 
 const TABS = [
-  { name: 'index',       label: 'Dashboard', icon: 'pulse',            iconActive: 'pulse'            },
-  { name: 'alerts',      label: 'Alerts',    icon: 'notifications-outline', iconActive: 'notifications' },
-  { name: 'trades',      label: 'Trades',    icon: 'receipt-outline',   iconActive: 'receipt'          },
-  { name: 'positions',   label: 'Positions', icon: 'briefcase-outline', iconActive: 'briefcase'        },
+  { name: 'index',            label: 'Dashboard', icon: 'pulse',            iconActive: 'pulse'            },
+  { name: 'alerts',       label: 'Alerts',    icon: 'notifications-outline', iconActive: 'notifications' },
+  { name: 'trades',       label: 'Trades',    icon: 'receipt-outline',   iconActive: 'receipt'          },
+  { name: 'positions',    label: 'Positions', icon: 'briefcase-outline', iconActive: 'briefcase'        },
+  { name: 'risk-settings',  label: 'Risk',    icon: 'shield-outline', iconActive: 'shield'            },
+  { name: 'trading-settings', label: 'Trading', icon: 'options-outline', iconActive: 'options'        },
   { name: 'settings',    label: 'Settings',  icon: 'settings-outline',  iconActive: 'settings'         },
 ] as const;
 
@@ -50,7 +52,7 @@ function BottomTabBar() {
 export default function RootLayout() {
   const pathname = usePathname();
   // Only show tab bar on main screens
-  const showTabs = ['/', '/positions', '/trades', '/alerts', '/settings'].includes(pathname);
+  const showTabs = ['/', '/positions', '/trades', '/alerts', '/settings', '/risk-settings', '/trading-settings'].includes(pathname);
 
   return (
     <SafeAreaProvider>
@@ -67,6 +69,8 @@ export default function RootLayout() {
           <Stack.Screen name="alerts" />
           <Stack.Screen name="trades" />
           <Stack.Screen name="positions" />
+          <Stack.Screen name="risk-settings" />
+          <Stack.Screen name="trading-settings" />
           <Stack.Screen name="settings" />
           <Stack.Screen name="broker-config" />
           <Stack.Screen name="profiles" />
