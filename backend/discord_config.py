@@ -12,6 +12,43 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+# ============= ANALYST FORMAT SUPPORT =============
+
+def _import_analyst_formats():
+    """Lazy import of analyst formats"""
+    try:
+        from analyst_formats import auto_parse, detect_format, get_available_formats
+        return auto_parse, detect_format, get_available_formats
+    except ImportError:
+        return None, None, None
+
+_auto_parse, _detect_format, _get_formats = _import_analyst_formats()
+
+
+# Legacy wrapper functions
+def parse_alert_with_analyst(message: str) -> Optional[dict]:
+    """Parse using analyst formats"""
+    if _auto_parse:
+        result = _auto_parse(message)
+        if result:
+            return result.to_dict()
+    return None
+
+
+def detect_analyst_format(message: str) -> str:
+    """Detect which analyst format"""
+    if _detect_format:
+        return _detect_format(message)
+    return "default"
+
+
+def list_analyst_formats() -> List[dict]:
+    """List available formats"""
+    if _get_formats:
+        return _get_formats()
+    return [{"id": "default", "name": "Default"}]
+
+
 @dataclass
 class AlertPatternConfig:
     """Configuration for Discord alert parsing"""
