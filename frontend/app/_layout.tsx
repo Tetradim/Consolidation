@@ -12,6 +12,7 @@ const TABS = [
   { name: 'positions',    label: 'Positions', icon: 'briefcase-outline', iconActive: 'briefcase'        },
   { name: 'risk-settings',  label: 'Risk',    icon: 'shield-outline', iconActive: 'shield'            },
   { name: 'trading-settings', label: 'Trading', icon: 'options-outline', iconActive: 'options'        },
+  { name: 'strike-selection', label: 'Strikes', icon: 'trending-up-outline', iconActive: 'trending-up'  },
   { name: 'discord-settings', label: 'Discord', icon: 'chatbubbles-outline', iconActive: 'chatbubbles'  },
   { name: 'settings',    label: 'Settings',  icon: 'settings-outline',  iconActive: 'settings'         },
 ] as const;
@@ -72,6 +73,7 @@ export default function RootLayout() {
           <Stack.Screen name="positions" />
           <Stack.Screen name="risk-settings" />
           <Stack.Screen name="trading-settings" />
+          <Stack.Screen name="strike-selection" />
           <Stack.Screen name="discord-settings" />
           <Stack.Screen name="settings" />
           <Stack.Screen name="broker-config" />
