@@ -8,9 +8,56 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { api } from '../utils/api';
-import { BACKEND_URL } from '../constants/config';
+import { BACKEND_URL, DEMO_MODE } from '../constants/config';
 import { BROKER_COLORS, BROKER_NAMES } from '../constants/brokers';
 import { formatDate, formatPnL, getPnLColor } from '../utils/format';
+
+// ── Demo Data ─────────────────────────────────────────────────────────────────
+const DEMO_STATUS: BotStatus = {
+  discord_connected: true,
+  broker_connected: true,
+  active_broker: 'IBKR',
+  auto_trading_enabled: true,
+  last_alert_time: new Date().toISOString(),
+};
+
+const DEMO_ALERTS: AlertItem[] = [
+  { id: '1', ticker: 'AAPL', strike: 175, option_type: 'CALL', expiration: '2024-05-17', entry_price: 3.50, received_at: '2024-04-18T10:30:00Z', processed: true, trade_executed: true },
+  { id: '2', ticker: 'TSLA', strike: 150, option_type: 'PUT', expiration: '2024-05-17', entry_price: 2.80, received_at: '2024-04-18T09:15:00Z', processed: true, trade_executed: true },
+  { id: '3', ticker: 'NVDA', strike: 800, option_type: 'CALL', expiration: '2024-04-19', entry_price: 12.50, received_at: '2024-04-17T14:20:00Z', processed: true, trade_executed: false },
+  { id: '4', ticker: 'MSFT', strike: 380, option_type: 'CALL', expiration: '2024-05-17', entry_price: 5.20, received_at: '2024-04-17T11:45:00Z', processed: false, trade_executed: false },
+];
+
+const DEMO_TRADES: Trade[] = [
+  { id: '1', ticker: 'NVDA', strike: 800, option_type: 'CALL', expiration: '2024-04-19', entry_price: 12.50, exit_price: 14.20, current_price: null, quantity: 2, status: 'closed', executed_at: '2024-04-10T09:15:00Z', broker: 'IBKR', simulated: true, realized_pnl: 340, unrealized_pnl: null },
+  { id: '2', ticker: 'AAPL', strike: 175, option_type: 'CALL', expiration: '2024-05-17', entry_price: 3.50, exit_price: null, current_price: 4.25, quantity: 5, status: 'open', executed_at: '2024-04-15T10:30:00Z', broker: 'IBKR', simulated: false, realized_pnl: null, unrealized_pnl: 375 },
+  { id: '3', ticker: 'TSLA', strike: 150, option_type: 'PUT', expiration: '2024-05-17', entry_price: 2.80, exit_price: null, current_price: 2.10, quantity: 3, status: 'open', executed_at: '2024-04-16T14:20:00Z', broker: 'Alpaca', simulated: false, realized_pnl: null, unrealized_pnl: -210 },
+];
+
+const DEMO_PORTFOLIO: PortfolioSummary = {
+  total_trades: 47,
+  open_positions: 3,
+  closed_positions: 44,
+  total_realized_pnl: 2840,
+  total_unrealized_pnl: 165,
+  total_pnl: 3005,
+  win_rate: 68.5,
+  winning_trades: 30,
+  losing_trades: 14,
+  best_trade: 850,
+  worst_trade: -320,
+  average_pnl: 60.4,
+};
+
+const DEMO_SHUTDOWN: ShutdownSettings = {
+  max_consecutive_losses: 3,
+  max_daily_losses: 5,
+  max_daily_loss_amount: 500,
+  consecutive_losses: 1,
+  daily_losses: 2,
+  shutdown_triggered: false,
+  shutdown_reason: '',
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface BotStatus {
@@ -118,6 +165,33 @@ export default function Dashboard() {
   const [premiumBufferAmt, setPremiumBufferAmt] = useState(10);
 
   const fetchData = useCallback(async () => {
+    if (DEMO_MODE) {
+      // Load demo data
+      setStatus(DEMO_STATUS);
+      setAlerts(DEMO_ALERTS);
+      setTrades(DEMO_TRADES);
+      setPortfolio(DEMO_PORTFOLIO);
+      setBrokers([
+        { id: '1', name: 'IBKR', status: 'connected', account_id: 'DU123456' },
+        { id: '2', name: 'Alpaca', status: 'connected', account_id: 'PAPER-123' },
+        { id: '3', name: 'Tradier', status: 'disconnected', account_id: '' },
+      ]);
+      setAutoTrading(true);
+      setSimMode(true);
+      setAvgDown(true);
+      setTakeProfit(true);
+      setStopLoss(true);
+      setRiskSettings({ take_profit_percentage: 50, stop_loss_percentage: 30 });
+      setTrailingStop(true);
+      setTrailingSettings({ trailing_stop_percent: 25 });
+      setAutoShutdown(true);
+      setShutdownSettings(DEMO_SHUTDOWN);
+      setPremiumBuffer(true);
+      setPremiumBufferAmt(10);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       setError(null);
       const [statusRes, alertsRes, tradesRes, brokersRes, portfolioRes,

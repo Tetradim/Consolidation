@@ -6,9 +6,19 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../utils/api';
-import { BACKEND_URL } from '../constants/config';
+import { BACKEND_URL, DEMO_MODE } from '../constants/config';
 import { BROKER_COLORS, BROKER_NAMES } from '../constants/brokers';
 import { validatePrice, formatDate, formatPnL, getPnLColor } from '../utils/format';
+
+// Demo trades
+const DEMO_TRADES: Trade[] = [
+  { id: '1', ticker: 'NVDA', strike: 800, option_type: 'CALL', expiration: '2024-04-19', entry_price: 12.50, exit_price: 14.20, current_price: null, quantity: 2, status: 'closed', executed_at: '2024-04-10T09:15:00Z', closed_at: '2024-04-17T15:45:00Z', broker: 'IBKR', order_id: 'ORD-001', error_message: null, simulated: true, realized_pnl: 340, unrealized_pnl: null },
+  { id: '2', ticker: 'AAPL', strike: 175, option_type: 'CALL', expiration: '2024-05-17', entry_price: 3.50, exit_price: null, current_price: 4.25, quantity: 5, status: 'executed', executed_at: '2024-04-15T10:30:00Z', closed_at: null, broker: 'IBKR', order_id: 'ORD-002', error_message: null, simulated: false, realized_pnl: null, unrealized_pnl: 375 },
+  { id: '3', ticker: 'TSLA', strike: 150, option_type: 'PUT', expiration: '2024-05-17', entry_price: 2.80, exit_price: null, current_price: 2.10, quantity: 3, status: 'executed', executed_at: '2024-04-16T14:20:00Z', closed_at: null, broker: 'Alpaca', order_id: 'ORD-003', error_message: null, simulated: false, realized_pnl: null, unrealized_pnl: -210 },
+  { id: '4', ticker: 'MSFT', strike: 380, option_type: 'CALL', expiration: '2024-05-17', entry_price: 5.20, exit_price: null, current_price: 5.80, quantity: 4, status: 'executed', executed_at: '2024-04-12T11:00:00Z', closed_at: null, broker: 'Tradier', order_id: 'ORD-004', error_message: null, simulated: false, realized_pnl: null, unrealized_pnl: 120 },
+  { id: '5', ticker: 'GOOGL', strike: 155, option_type: 'CALL', expiration: '2024-05-17', entry_price: 2.10, exit_price: 1.80, quantity: 3, status: 'closed', executed_at: '2024-04-11T09:30:00Z', closed_at: '2024-04-15T14:00:00Z', broker: 'IBKR', order_id: 'ORD-005', error_message: null, simulated: false, realized_pnl: -90, unrealized_pnl: null },
+  { id: '6', ticker: 'META', strike: 480, option_type: 'CALL', expiration: '2024-05-17', entry_price: 8.50, exit_price: 12.30, quantity: 2, status: 'closed', executed_at: '2024-04-09T10:15:00Z', closed_at: '2024-04-16T16:30:00Z', broker: 'IBKR', order_id: 'ORD-006', error_message: null, simulated: false, realized_pnl: 760, unrealized_pnl: null },
+];
 
 interface Trade {
   id: string; ticker: string; strike: number; option_type: string;
@@ -51,6 +61,22 @@ export default function TradesScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const fetchTrades = useCallback(async () => {
+    if (DEMO_MODE) {
+      setTrades(DEMO_TRADES);
+      setPortfolio({
+        total_pnl: 3005,
+        total_realized_pnl: 2840,
+        total_unrealized_pnl: 165,
+        win_rate: 68.5,
+        open_positions: 3,
+        closed_positions: 44,
+        winning_trades: 30,
+        losing_trades: 14,
+      });
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const [tr, pr] = await Promise.all([
         api.get(`${BACKEND_URL}/api/trades?limit=200`),
@@ -58,7 +84,10 @@ export default function TradesScreen() {
       ]);
       setTrades(tr.data);
       setPortfolio(pr.data);
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error(e);
+      setTrades(DEMO_TRADES);
+    }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
 

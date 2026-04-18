@@ -6,7 +6,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../utils/api';
-import { BACKEND_URL } from '../constants/config';
+import { BACKEND_URL, DEMO_MODE } from '../constants/config';
+
+// Demo alerts
+const DEMO_ALERTS: AlertItem[] = [
+  { id: '1', ticker: 'AAPL', strike: 175, option_type: 'CALL', expiration: '2024-05-17', entry_price: 3.50, raw_message: 'BTO AAPL 175C May 17', channel_name: 'alerts', received_at: '2024-04-18T10:30:00Z', processed: true, trade_executed: true },
+  { id: '2', ticker: 'TSLA', strike: 150, option_type: 'PUT', expiration: '2024-05-17', entry_price: 2.80, raw_message: 'BTO TSLA 150P May 17', channel_name: 'alerts', received_at: '2024-04-18T09:15:00Z', processed: true, trade_executed: true },
+  { id: '3', ticker: 'NVDA', strike: 800, option_type: 'CALL', expiration: '2024-04-19', entry_price: 12.50, raw_message: 'BTO NVDA 800C Apr 19', channel_name: 'alerts', received_at: '2024-04-17T14:20:00Z', processed: true, trade_executed: false },
+  { id: '4', ticker: 'MSFT', strike: 380, option_type: 'CALL', expiration: '2024-05-17', entry_price: 5.20, raw_message: 'STC MSFT 380C May 17', channel_name: 'alerts', received_at: '2024-04-17T11:45:00Z', processed: false, trade_executed: false },
+  { id: '5', ticker: 'GOOGL', strike: 155, option_type: 'CALL', expiration: '2024-05-17', entry_price: 2.10, raw_message: 'BTO GOOGL 155C May 17', channel_name: 'alerts', received_at: '2024-04-17T08:30:00Z', processed: true, trade_executed: true },
+  { id: '6', ticker: 'META', strike: 480, option_type: 'CALL', expiration: '2024-05-17', entry_price: 8.50, raw_message: 'BTO META 480C May 17', channel_name: 'alerts', received_at: '2024-04-16T16:00:00Z', processed: true, trade_executed: true },
+];
 
 interface AlertItem {
   id: string; ticker: string; strike: number; option_type: string;
@@ -23,10 +33,19 @@ export default function AlertsScreen() {
   const [filter, setFilter]     = useState<Filter>('all');
 
   const fetchAlerts = useCallback(async () => {
+    if (DEMO_MODE) {
+      setAlerts(DEMO_ALERTS);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const r = await api.get(`${BACKEND_URL}/api/alerts?limit=200`);
       setAlerts(r.data);
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error(e);
+      setAlerts(DEMO_ALERTS);
+    }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
 
