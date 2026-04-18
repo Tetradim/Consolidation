@@ -7,7 +7,55 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { api } from '../utils/api';
-import { BACKEND_URL } from '../constants/config';
+import { BACKEND_URL, DEMO_MODE } from '../constants/config';
+
+// Default demo settings
+const DEMO_SETTINGS: Settings = {
+  discord_token: 'DEMO_TOKEN',
+  discord_channel_ids: ['123456789'],
+  active_broker: 'IBKR',
+  auto_trading_enabled: true,
+  default_quantity: 5,
+  simulation_mode: true,
+  max_position_size: 1000,
+  averaging_down_enabled: true,
+  averaging_down_threshold: 10,
+  averaging_down_percentage: 50,
+  averaging_down_max_buys: 3,
+  take_profit_enabled: true,
+  take_profit_percentage: 50,
+  stop_loss_enabled: true,
+  stop_loss_percentage: 30,
+  bracket_order_enabled: true,
+  stop_loss_order_type: 'market',
+  trailing_stop_enabled: true,
+  trailing_stop_type: 'percent',
+  trailing_stop_percent: 25,
+  trailing_stop_cents: 0.5,
+  auto_shutdown_enabled: true,
+  max_consecutive_losses: 3,
+  max_daily_losses: 5,
+  max_daily_loss_amount: 500,
+  premium_buffer_enabled: true,
+  premium_buffer_amount: 2,
+  max_positions_per_ticker: 3,
+  sms_enabled: false,
+  sms_phone_number: '',
+  twilio_account_sid: '',
+  twilio_auth_token: '',
+  twilio_from_number: '',
+};
+
+const DEMO_PATTERNS: AlertPatterns = {
+  buy_patterns: ['BTO', 'BUY', 'LONG', 'CALL'],
+  sell_patterns: ['STC', 'SELL', 'CLOSE', 'EXIT'],
+  partial_sell_patterns: ['STC PARTIAL', 'TRIM', 'TAKE PROFIT'],
+  average_down_patterns: ['AVG DOWN', 'ADD TO', 'AVERAGING'],
+  stop_loss_patterns: ['STOP', 'STOP LOSS', 'GLD'],
+  take_profit_patterns: ['TAKE PROFIT', 'TP', 'TARGET'],
+  ignore_patterns: ['WATCH', 'WATCHLIST', 'PAPER'],
+  case_sensitive: false,
+};
 import { BROKER_COLORS, BROKER_NAMES_FULL as BROKER_NAMES } from '../constants/brokers';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -160,6 +208,16 @@ export default function SettingsScreen() {
   const originalSettings = useRef<Settings | null>(null);
 
   const fetchAll = useCallback(async () => {
+    if (DEMO_MODE) {
+      // Use demo data
+      setSettings(DEMO_SETTINGS);
+      setPatterns(DEMO_PATTERNS);
+      setChannelInput(DEMO_SETTINGS.discord_channel_ids.join(', '));
+      originalSettings.current = DEMO_SETTINGS;
+      setDirty(false);
+      setLoading(false);
+      return;
+    }
     try {
       const [sRes, pRes] = await Promise.all([
         api.get(`${BACKEND_URL}/api/settings`),

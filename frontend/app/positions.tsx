@@ -6,9 +6,41 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../utils/api';
-import { BACKEND_URL } from '../constants/config';
+import { BACKEND_URL, DEMO_MODE } from '../constants/config';
 import { BROKER_COLORS, BROKER_NAMES } from '../constants/brokers';
 import { validatePrice, validatePercentage, formatDate, formatPnL, getPnLColor } from '../utils/format';
+
+// Demo data for when backend is unavailable
+const DEMO_POSITIONS: Position[] = [
+  {
+    id: '1', ticker: 'AAPL', strike: 175, option_type: 'CALL',
+    expiration: '2024-05-17', entry_price: 3.50, current_price: 4.25,
+    original_quantity: 5, remaining_quantity: 5, total_cost: 1750,
+    broker: 'IBKR', status: 'open', opened_at: '2024-04-15T10:30:00Z',
+    closed_at: null, realized_pnl: 0, unrealized_pnl: 375, simulated: false
+  },
+  {
+    id: '2', ticker: 'TSLA', strike: 150, option_type: 'PUT',
+    expiration: '2024-05-17', entry_price: 2.80, current_price: 2.10,
+    original_quantity: 3, remaining_quantity: 3, total_cost: 840,
+    broker: 'Alpaca', status: 'open', opened_at: '2024-04-16T14:20:00Z',
+    closed_at: null, realized_pnl: 0, unrealized_pnl: -210, simulated: false
+  },
+  {
+    id: '3', ticker: 'NVDA', strike: 800, option_type: 'CALL',
+    expiration: '2024-04-19', entry_price: 12.50, current_price: 14.20,
+    original_quantity: 2, remaining_quantity: 0, total_cost: 2500,
+    broker: 'IBKR', status: 'closed', opened_at: '2024-04-10T09:15:00Z',
+    closed_at: '2024-04-17T15:45:00Z', realized_pnl: 340, unrealized_pnl: 0, simulated: true
+  },
+  {
+    id: '4', ticker: 'MSFT', strike: 380, option_type: 'CALL',
+    expiration: '2024-05-17', entry_price: 5.20, current_price: 5.80,
+    original_quantity: 4, remaining_quantity: 2, total_cost: 2080,
+    broker: 'Tradier', status: 'partial', opened_at: '2024-04-12T11:00:00Z',
+    closed_at: null, realized_pnl: 120, unrealized_pnl: 120, simulated: false
+  },
+];
 
 interface Position {
   id: string; ticker: string; strike: number; option_type: string;
@@ -32,11 +64,22 @@ export default function PositionsScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const fetch = useCallback(async () => {
+    if (DEMO_MODE) {
+      // Use demo data
+      setPositions(DEMO_POSITIONS);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const param = filter === 'all' ? '' : `?status=${filter}`;
       const r = await api.get(`${BACKEND_URL}/api/positions${param}`);
       setPositions(r.data);
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error(e); 
+      // Fallback to demo data on error
+      setPositions(DEMO_POSITIONS);
+    }
     finally { setLoading(false); setRefreshing(false); }
   }, [filter]);
 
