@@ -12,6 +12,7 @@ const TABS = [
   { name: 'positions',    label: 'Positions', icon: 'briefcase-outline', iconActive: 'briefcase'        },
   { name: 'risk-settings',  label: 'Risk',    icon: 'shield-outline', iconActive: 'shield'            },
   { name: 'trading-settings', label: 'Trading', icon: 'options-outline', iconActive: 'options'        },
+  { name: 'discord-settings', label: 'Discord', icon: 'chatbubbles-outline', iconActive: 'chatbubbles'  },
   { name: 'settings',    label: 'Settings',  icon: 'settings-outline',  iconActive: 'settings'         },
 ] as const;
 
@@ -52,7 +53,7 @@ function BottomTabBar() {
 export default function RootLayout() {
   const pathname = usePathname();
   // Only show tab bar on main screens
-  const showTabs = ['/', '/positions', '/trades', '/alerts', '/settings', '/risk-settings', '/trading-settings'].includes(pathname);
+  const showTabs = ['/', '/positions', '/trades', '/alerts', '/settings', '/risk-settings', '/trading-settings', '/discord-settings'].includes(pathname);
 
   return (
     <SafeAreaProvider>
@@ -71,6 +72,7 @@ export default function RootLayout() {
           <Stack.Screen name="positions" />
           <Stack.Screen name="risk-settings" />
           <Stack.Screen name="trading-settings" />
+          <Stack.Screen name="discord-settings" />
           <Stack.Screen name="settings" />
           <Stack.Screen name="broker-config" />
           <Stack.Screen name="profiles" />
