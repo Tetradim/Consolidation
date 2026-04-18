@@ -1,7 +1,7 @@
 """
 Analyst Format Parser
 Pre-built parsing patterns for 20+ different analyst formats
-Pre-built trading signal patterns
+Based on DiscordAlertsTrader patterns
 
 Supports formats for:
 - EnhancedMarket
