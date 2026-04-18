@@ -1,0 +1,649 @@
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter, useNavigation } from 'expo-router';
+import { api } from '../utils/api';
+
+import { BACKEND_URL } from '../constants/config';
+import { BROKER_COLORS } from '../constants/brokers';
+
+interface BrokerInfo {
+  id: string;
+  name: string;
+  description: string;
+  supports_options: boolean;
+  requires_gateway: boolean;
+  config_fields: ConfigField[];
+}
+
+interface ConfigField {
+  key: string;
+  label: string;
+  type: string;
+  placeholder?: string;
+  options?: { value: string; label: string }[];
+}
+
+interface BrokerConfig {
+  [key: string]: string;
+}
+
+export default function BrokerConfigScreen() {
+  const router = useRouter();
+  const navigation = useNavigation();
+  const [brokers, setBrokers] = useState<BrokerInfo[]>([]);
+  const [activeBroker, setActiveBroker] = useState<string>('ibkr');
+  const [brokerConfigs, setBrokerConfigs] = useState<{ [key: string]: BrokerConfig }>({});
+  const [savedConfigs, setSavedConfigs] = useState<{ [key: string]: BrokerConfig }>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [checkingConnection, setCheckingConnection] = useState<string | null>(null);
+  const [selectedBroker, setSelectedBroker] = useState<string | null>(null);
+
+  // M15: track whether any config field has been edited since last save
+  const hasUnsavedChanges = JSON.stringify(brokerConfigs) !== JSON.stringify(savedConfigs);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [brokersRes, settingsRes] = await Promise.all([
+        api.get(`${BACKEND_URL}/api/brokers`),
+        api.get(`${BACKEND_URL}/api/settings`),
+      ]);
+      setBrokers(brokersRes.data);
+      setActiveBroker(settingsRes.data.active_broker);
+      const configs = settingsRes.data.broker_configs || {};
+      setBrokerConfigs(configs);
+      setSavedConfigs(configs);  // snapshot for dirty-check
+      setSelectedBroker(settingsRes.data.active_broker);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // M15: warn user if they navigate away with unsaved changes
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      if (!hasUnsavedChanges) return;
+      e.preventDefault();
+      Alert.alert(
+        'Unsaved Changes',
+        'You have unsaved API key changes. Leave without saving?',
+        [
+          { text: 'Stay', style: 'cancel' },
+          {
+            text: 'Leave',
+            style: 'destructive',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+        ]
+      );
+    });
+    return unsubscribe;
+  }, [navigation, hasUnsavedChanges]);
+
+  const updateBrokerConfig = (brokerId: string, key: string, value: string) => {
+    setBrokerConfigs(prev => ({
+      ...prev,
+      [brokerId]: {
+        ...(prev[brokerId] || {}),
+        [key]: value,
+      },
+    }));
+  };
+
+  const saveBrokerConfig = async (brokerId: string) => {
+    setSaving(true);
+    try {
+      await api.put(`${BACKEND_URL}/api/settings`, {
+        broker_configs: {
+          [brokerId]: brokerConfigs[brokerId] || {},
+        },
+      });
+      // M15: update savedConfigs snapshot so dirty flag clears
+      setSavedConfigs(prev => ({
+        ...prev,
+        [brokerId]: brokerConfigs[brokerId] || {},
+      }));
+      Alert.alert('Success', `${brokers.find(b => b.id === brokerId)?.name || brokerId} configuration saved!`);
+    } catch (error) {
+      console.error('Error saving config:', error);
+      Alert.alert('Error', 'Failed to save configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const switchActiveBroker = async (brokerId: string) => {
+    try {
+      await api.post(`${BACKEND_URL}/api/broker/switch/${brokerId}`);
+      setActiveBroker(brokerId);
+      Alert.alert('Success', `Switched to ${brokers.find(b => b.id === brokerId)?.name || brokerId}`);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to switch broker.');
+      Alert.alert('Error', 'Failed to switch broker');
+    }
+  };
+
+  const checkConnection = async (brokerId: string) => {
+    setCheckingConnection(brokerId);
+    try {
+      const response = await api.post(`${BACKEND_URL}/api/broker/check/${brokerId}`);
+      Alert.alert(
+        response.data.connected ? 'Connected!' : 'Not Connected',
+        response.data.message
+      );
+    } catch (error) {
+      console.error('Error checking connection:', error);
+      Alert.alert('Error', 'Failed to check connection');
+    } finally {
+      setCheckingConnection(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#3b82f6" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const selectedBrokerInfo = brokers.find(b => b.id === selectedBroker);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView 
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardView}
+      >
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <Ionicons name="arrow-back" size={24} color="#fff" />
+          </TouchableOpacity>
+          <Text style={styles.title}>
+            Broker APIs{hasUnsavedChanges ? ' •' : ''}
+          </Text>
+          <View style={styles.placeholder} />
+        </View>
+        
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+          {/* Broker Selector Tabs */}
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.tabsContainer}
+            contentContainerStyle={styles.tabsContent}
+          >
+            {brokers.map((broker) => (
+              <TouchableOpacity
+                key={broker.id}
+                style={[
+                  styles.brokerTab,
+                  selectedBroker === broker.id && styles.brokerTabActive,
+                  { borderColor: BROKER_COLORS[broker.id] || '#6b7280' }
+                ]}
+                onPress={() => setSelectedBroker(broker.id)}
+              >
+                <View style={[styles.tabDot, { backgroundColor: BROKER_COLORS[broker.id] || '#6b7280' }]} />
+                <Text style={[
+                  styles.tabText,
+                  selectedBroker === broker.id && styles.tabTextActive
+                ]}>
+                  {broker.name}
+                </Text>
+                {activeBroker === broker.id && (
+                  <View style={styles.activeIndicator}>
+                    <Ionicons name="checkmark-circle" size={14} color="#22c55e" />
+                  </View>
+                )}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Selected Broker Configuration */}
+          {selectedBrokerInfo && (
+            <View style={styles.configSection}>
+              <View style={styles.brokerHeader}>
+                <View style={[styles.brokerIcon, { backgroundColor: BROKER_COLORS[selectedBrokerInfo.id] }]}>
+                  <Ionicons name="key-outline" size={24} color="#fff" />
+                </View>
+                <View style={styles.brokerHeaderInfo}>
+                  <Text style={styles.brokerName}>{selectedBrokerInfo.name}</Text>
+                  <Text style={styles.brokerDesc}>{selectedBrokerInfo.description}</Text>
+                </View>
+              </View>
+
+              {/* Status indicators */}
+              <View style={styles.statusRow}>
+                <View style={styles.statusBadge}>
+                  <Ionicons 
+                    name={selectedBrokerInfo.supports_options ? "checkmark-circle" : "close-circle"} 
+                    size={16} 
+                    color={selectedBrokerInfo.supports_options ? '#22c55e' : '#ef4444'} 
+                  />
+                  <Text style={styles.statusText}>Options Trading</Text>
+                </View>
+                {selectedBrokerInfo.requires_gateway && (
+                  <View style={styles.statusBadge}>
+                    <Ionicons name="desktop-outline" size={16} color="#f59e0b" />
+                    <Text style={styles.statusText}>Requires Gateway</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Configuration Fields */}
+              <View style={styles.fieldsContainer}>
+                <Text style={styles.fieldsTitle}>API Configuration</Text>
+                
+                {selectedBrokerInfo.config_fields.map((field) => (
+                  <View key={field.key} style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>{field.label}</Text>
+                    {field.type === 'select' && field.options ? (
+                      <View style={styles.selectContainer}>
+                        {field.options.map((option) => (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[
+                              styles.selectOption,
+                              brokerConfigs[selectedBrokerInfo.id]?.[field.key] === option.value && styles.selectOptionActive
+                            ]}
+                            onPress={() => updateBrokerConfig(selectedBrokerInfo.id, field.key, option.value)}
+                          >
+                            <View style={[
+                              styles.radioButton,
+                              brokerConfigs[selectedBrokerInfo.id]?.[field.key] === option.value && styles.radioButtonActive
+                            ]} />
+                            <Text style={[
+                              styles.selectOptionText,
+                              brokerConfigs[selectedBrokerInfo.id]?.[field.key] === option.value && styles.selectOptionTextActive
+                            ]}>
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    ) : (
+                      <TextInput
+                        style={styles.textInput}
+                        value={brokerConfigs[selectedBrokerInfo.id]?.[field.key] || ''}
+                        onChangeText={(text) => updateBrokerConfig(selectedBrokerInfo.id, field.key, text)}
+                        placeholder={field.placeholder}
+                        placeholderTextColor="#64748b"
+                        secureTextEntry={field.type === 'password'}
+                        autoCapitalize="none"
+                      />
+                    )}
+                  </View>
+                ))}
+              </View>
+
+              {/* Action Buttons */}
+              <View style={styles.actionsContainer}>
+                <TouchableOpacity
+                  style={[styles.saveBtn, { backgroundColor: BROKER_COLORS[selectedBrokerInfo.id] }]}
+                  onPress={() => saveBrokerConfig(selectedBrokerInfo.id)}
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="save-outline" size={20} color="#fff" />
+                      <Text style={styles.saveBtnText}>Save Configuration</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                <View style={styles.secondaryActions}>
+                  <TouchableOpacity
+                    style={styles.secondaryBtn}
+                    onPress={() => checkConnection(selectedBrokerInfo.id)}
+                    disabled={checkingConnection === selectedBrokerInfo.id}
+                  >
+                    {checkingConnection === selectedBrokerInfo.id ? (
+                      <ActivityIndicator size="small" color="#3b82f6" />
+                    ) : (
+                      <>
+                        <Ionicons name="wifi-outline" size={18} color="#3b82f6" />
+                        <Text style={styles.secondaryBtnText}>Test Connection</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  {activeBroker !== selectedBrokerInfo.id && (
+                    <TouchableOpacity
+                      style={[styles.secondaryBtn, styles.activateBtn]}
+                      onPress={() => switchActiveBroker(selectedBrokerInfo.id)}
+                    >
+                      <Ionicons name="swap-horizontal-outline" size={18} color="#22c55e" />
+                      <Text style={[styles.secondaryBtnText, { color: '#22c55e' }]}>Set as Active</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {activeBroker === selectedBrokerInfo.id && (
+                  <View style={styles.activeBadge}>
+                    <Ionicons name="checkmark-circle" size={18} color="#22c55e" />
+                    <Text style={styles.activeBadgeText}>Currently Active Broker</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* Help Section */}
+          <View style={styles.helpSection}>
+            <Ionicons name="help-circle-outline" size={24} color="#64748b" />
+            <View style={styles.helpContent}>
+              <Text style={styles.helpTitle}>Need Help?</Text>
+              <Text style={styles.helpText}>
+                Each broker has different API requirements. Make sure to:
+                {"\n"}• Create API keys from your broker's developer portal
+                {"\n"}• Enable options trading permissions if needed
+                {"\n"}• For IBKR, run the Client Portal Gateway locally
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.bottomPadding} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+  },
+  keyboardView: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  backButton: {
+    padding: 8,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  placeholder: {
+    width: 40,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  tabsContainer: {
+    marginTop: 16,
+  },
+  tabsContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  brokerTab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 10,
+    marginRight: 8,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  brokerTabActive: {
+    backgroundColor: '#334155',
+  },
+  tabDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  tabText: {
+    fontSize: 14,
+    color: '#94a3b8',
+    fontWeight: '500',
+  },
+  tabTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  activeIndicator: {
+    marginLeft: 6,
+  },
+  configSection: {
+    backgroundColor: '#1e293b',
+    marginHorizontal: 16,
+    marginTop: 16,
+    borderRadius: 12,
+    padding: 16,
+  },
+  brokerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  brokerIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  brokerHeaderInfo: {
+    flex: 1,
+  },
+  brokerName: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  brokerDesc: {
+    fontSize: 13,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  statusText: {
+    fontSize: 12,
+    color: '#94a3b8',
+  },
+  fieldsContainer: {
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+    paddingTop: 16,
+  },
+  fieldsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748b',
+    marginBottom: 16,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#e2e8f0',
+    marginBottom: 8,
+  },
+  textInput: {
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    color: '#fff',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  selectContainer: {
+    gap: 8,
+  },
+  selectOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  selectOptionActive: {
+    borderColor: '#3b82f6',
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+  },
+  radioButton: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: '#64748b',
+    marginRight: 10,
+  },
+  radioButtonActive: {
+    borderColor: '#3b82f6',
+    backgroundColor: '#3b82f6',
+  },
+  selectOptionText: {
+    fontSize: 14,
+    color: '#94a3b8',
+  },
+  selectOptionTextActive: {
+    color: '#fff',
+  },
+  actionsContainer: {
+    marginTop: 20,
+  },
+  saveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 8,
+    gap: 8,
+  },
+  saveBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  secondaryActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  secondaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0f172a',
+    paddingVertical: 12,
+    borderRadius: 8,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  activateBtn: {
+    borderColor: '#22c55e',
+  },
+  secondaryBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#3b82f6',
+  },
+  activeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    paddingVertical: 10,
+    borderRadius: 8,
+    gap: 6,
+    marginTop: 12,
+  },
+  activeBadgeText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#22c55e',
+  },
+  helpSection: {
+    flexDirection: 'row',
+    backgroundColor: '#1e293b',
+    marginHorizontal: 16,
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 12,
+  },
+  helpContent: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  helpTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  helpText: {
+    fontSize: 13,
+    color: '#94a3b8',
+    lineHeight: 20,
+  },
+  bottomPadding: {
+    height: 40,
+  },
+});

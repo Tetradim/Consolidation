@@ -1,0 +1,383 @@
+"""
+Settings and risk management endpoints
+"""
+from fastapi import APIRouter, HTTPException, Header
+from models import (
+    Settings, SettingsUpdate,
+    AveragingDownSettingsUpdate, RiskManagementSettingsUpdate,
+    TrailingStopSettingsUpdate, AutoShutdownSettingsUpdate,
+    BrokerConfig
+)
+from datetime import datetime, timezone
+import logging
+import os
+from typing import Optional
+# C4: credential encryption at rest
+from utils.credentials import encrypt_broker_configs, decrypt_broker_configs
+
+router = APIRouter(tags=["Settings"])
+logger = logging.getLogger(__name__)
+
+# Database instance - will be set by main server
+db = None
+
+
+def set_db(database):
+    """Set the database reference"""
+    global db
+    db = database
+
+
+@router.get("/settings")
+async def get_settings():
+    """Get all settings -- broker_configs returned with credentials decrypted."""
+    settings = await db.get_settings()
+    if not settings:
+        return Settings().model_dump()
+    # C4: decrypt broker credentials before returning to the frontend
+    if settings.get('broker_configs'):
+        settings['broker_configs'] = decrypt_broker_configs(settings['broker_configs'])
+    return settings
+
+
+@router.put("/settings")
+async def update_settings(update: SettingsUpdate):
+    """Update settings -- broker_configs encrypted before persistence."""
+    update_dict = {k: v for k, v in update.model_dump().items() if v is not None}
+    # C4: encrypt broker credentials before writing to DB
+    if update_dict.get('broker_configs'):
+        update_dict['broker_configs'] = encrypt_broker_configs(update_dict['broker_configs'])
+    settings = await db.update_settings(update_dict)
+    # Decrypt for the response so the frontend sees plaintext
+    if settings.get('broker_configs'):
+        settings['broker_configs'] = decrypt_broker_configs(settings['broker_configs'])
+    return settings
+
+
+# Trading Toggles
+@router.post("/toggle-trading")
+async def toggle_trading():
+    """Toggle auto trading on/off"""
+    # FIXED C15: write DB first, update memory second
+    from routes.health import bot_status, update_bot_status
+    current = bot_status.get("auto_trading_enabled", False)
+    new_state = not current
+    await db.update_settings({"auto_trading_enabled": new_state})
+    update_bot_status("auto_trading_enabled", new_state)
+    return {"auto_trading_enabled": new_state}
+
+
+# Premium Buffer
+@router.post("/toggle-premium-buffer")
+async def toggle_premium_buffer():
+    """Toggle premium buffer"""
+    settings = await db.get_settings()
+    new_state = not settings.get('premium_buffer_enabled', False)
+    await db.update_settings({'premium_buffer_enabled': new_state})
+    return {"premium_buffer_enabled": new_state}
+
+
+@router.get("/premium-buffer-settings")
+async def get_premium_buffer_settings():
+    """Get premium buffer settings"""
+    settings = await db.get_settings()
+    return {
+        "premium_buffer_enabled": settings.get('premium_buffer_enabled', False),
+        "premium_buffer_amount": settings.get('premium_buffer_amount', 10.0)
+    }
+
+
+@router.put("/premium-buffer-settings")
+async def update_premium_buffer_settings(premium_buffer_amount: float):
+    """Update premium buffer amount"""
+    await db.update_settings({'premium_buffer_amount': premium_buffer_amount})
+    return {"premium_buffer_amount": premium_buffer_amount}
+
+
+# Averaging Down
+@router.post("/toggle-averaging-down")
+async def toggle_averaging_down():
+    """Toggle averaging down"""
+    settings = await db.get_settings()
+    new_state = not settings.get('averaging_down_enabled', False)
+    await db.update_settings({'averaging_down_enabled': new_state})
+    return {"averaging_down_enabled": new_state}
+
+
+@router.get("/averaging-down-settings")
+async def get_averaging_down_settings():
+    """Get averaging down settings"""
+    settings = await db.get_settings()
+    return {
+        "averaging_down_enabled": settings.get('averaging_down_enabled', False),
+        "averaging_down_threshold": settings.get('averaging_down_threshold', 10.0),
+        "averaging_down_percentage": settings.get('averaging_down_percentage', 25.0),
+        "averaging_down_max_buys": settings.get('averaging_down_max_buys', 3)
+    }
+
+
+@router.put("/averaging-down-settings")
+async def update_averaging_down_settings(update: AveragingDownSettingsUpdate):
+    """Update averaging down settings"""
+    update_dict = {k: v for k, v in update.model_dump().items() if v is not None}
+    await db.update_settings(update_dict)
+    settings = await db.get_settings()
+    return {
+        "averaging_down_enabled": settings.get('averaging_down_enabled', False),
+        "averaging_down_threshold": settings.get('averaging_down_threshold', 10.0),
+        "averaging_down_percentage": settings.get('averaging_down_percentage', 25.0),
+        "averaging_down_max_buys": settings.get('averaging_down_max_buys', 3)
+    }
+
+
+# Take Profit / Stop Loss
+@router.post("/toggle-take-profit")
+async def toggle_take_profit():
+    """Toggle take profit"""
+    settings = await db.get_settings()
+    new_state = not settings.get('take_profit_enabled', False)
+    await db.update_settings({'take_profit_enabled': new_state})
+    return {"take_profit_enabled": new_state}
+
+
+@router.post("/toggle-stop-loss")
+async def toggle_stop_loss():
+    """Toggle stop loss"""
+    settings = await db.get_settings()
+    new_state = not settings.get('stop_loss_enabled', False)
+    await db.update_settings({'stop_loss_enabled': new_state})
+    return {"stop_loss_enabled": new_state}
+
+
+@router.get("/risk-management-settings")
+async def get_risk_management_settings():
+    """Get risk management settings"""
+    settings = await db.get_settings()
+    return {
+        "take_profit_enabled": settings.get('take_profit_enabled', False),
+        "take_profit_percentage": settings.get('take_profit_percentage', 50.0),
+        "bracket_order_enabled": settings.get('bracket_order_enabled', False),
+        "stop_loss_enabled": settings.get('stop_loss_enabled', False),
+        "stop_loss_percentage": settings.get('stop_loss_percentage', 25.0),
+        "stop_loss_order_type": settings.get('stop_loss_order_type', 'market')
+    }
+
+
+@router.put("/risk-management-settings")
+async def update_risk_management_settings(update: RiskManagementSettingsUpdate):
+    """Update risk management settings"""
+    update_dict = {k: v for k, v in update.model_dump().items() if v is not None}
+    if 'stop_loss_order_type' in update_dict and update_dict['stop_loss_order_type'] not in ['market', 'limit']:
+        raise HTTPException(status_code=400, detail="stop_loss_order_type must be 'market' or 'limit'")
+    await db.update_settings(update_dict)
+    settings = await db.get_settings()
+    return {
+        "take_profit_enabled": settings.get('take_profit_enabled', False),
+        "take_profit_percentage": settings.get('take_profit_percentage', 50.0),
+        "bracket_order_enabled": settings.get('bracket_order_enabled', False),
+        "stop_loss_enabled": settings.get('stop_loss_enabled', False),
+        "stop_loss_percentage": settings.get('stop_loss_percentage', 25.0),
+        "stop_loss_order_type": settings.get('stop_loss_order_type', 'market')
+    }
+
+
+# Trailing Stop
+@router.post("/toggle-trailing-stop")
+async def toggle_trailing_stop():
+    """Toggle trailing stop"""
+    settings = await db.get_settings()
+    new_state = not settings.get('trailing_stop_enabled', False)
+    await db.update_settings({'trailing_stop_enabled': new_state})
+    return {"trailing_stop_enabled": new_state}
+
+
+@router.get("/trailing-stop-settings")
+async def get_trailing_stop_settings():
+    """Get trailing stop settings"""
+    settings = await db.get_settings()
+    return {
+        "trailing_stop_enabled": settings.get('trailing_stop_enabled', False),
+        "trailing_stop_type": settings.get('trailing_stop_type', 'percent'),
+        "trailing_stop_percent": settings.get('trailing_stop_percent', 10.0),
+        "trailing_stop_cents": settings.get('trailing_stop_cents', 50.0)
+    }
+
+
+@router.put("/trailing-stop-settings")
+async def update_trailing_stop_settings(update: TrailingStopSettingsUpdate):
+    """Update trailing stop settings"""
+    update_dict = {k: v for k, v in update.model_dump().items() if v is not None}
+    if 'trailing_stop_type' in update_dict and update_dict['trailing_stop_type'] not in ['percent', 'premium']:
+        raise HTTPException(status_code=400, detail="trailing_stop_type must be 'percent' or 'premium'")
+    await db.update_settings(update_dict)
+    settings = await db.get_settings()
+    return {
+        "trailing_stop_enabled": settings.get('trailing_stop_enabled', False),
+        "trailing_stop_type": settings.get('trailing_stop_type', 'percent'),
+        "trailing_stop_percent": settings.get('trailing_stop_percent', 10.0),
+        "trailing_stop_cents": settings.get('trailing_stop_cents', 50.0)
+    }
+
+
+# Auto Shutdown
+@router.post("/toggle-auto-shutdown")
+async def toggle_auto_shutdown():
+    """Toggle auto shutdown"""
+    settings = await db.get_settings()
+    new_state = not settings.get('auto_shutdown_enabled', False)
+    await db.update_settings({'auto_shutdown_enabled': new_state})
+    return {"auto_shutdown_enabled": new_state}
+
+
+@router.get("/auto-shutdown-settings")
+async def get_auto_shutdown_settings():
+    """Get auto shutdown settings (config) merged with current runtime counters."""
+    settings = await db.get_settings()
+    # M6: live counters come from runtime_state, not the settings blob
+    runtime = await db.get_runtime_state()
+    return {
+        "auto_shutdown_enabled": settings.get('auto_shutdown_enabled', False),
+        "max_consecutive_losses": settings.get('max_consecutive_losses', 3),
+        "max_daily_losses": settings.get('max_daily_losses', 5),
+        "max_daily_loss_amount": settings.get('max_daily_loss_amount', 500.0),
+        "consecutive_losses": runtime.get('consecutive_losses', 0),
+        "daily_losses": runtime.get('daily_losses', 0),
+        "daily_loss_amount": runtime.get('daily_loss_amount', 0.0),
+        "shutdown_triggered": runtime.get('shutdown_triggered', False),
+        "shutdown_reason": runtime.get('shutdown_reason', ''),
+    }
+
+
+@router.put("/auto-shutdown-settings")
+async def update_auto_shutdown_settings(update: AutoShutdownSettingsUpdate):
+    """Update auto shutdown settings"""
+    update_dict = {k: v for k, v in update.model_dump().items() if v is not None}
+    await db.update_settings(update_dict)
+    settings = await db.get_settings()
+    return {
+        "auto_shutdown_enabled": settings.get('auto_shutdown_enabled', False),
+        "max_consecutive_losses": settings.get('max_consecutive_losses', 3),
+        "max_daily_losses": settings.get('max_daily_losses', 5),
+        "max_daily_loss_amount": settings.get('max_daily_loss_amount', 500.0)
+    }
+
+
+@router.post("/reset-loss-counters")
+async def reset_loss_counters(x_admin_key: Optional[str] = Header(default=None)):
+    """Reset all loss counters and re-enable trading.
+    
+    C14 fix: Optionally require admin key header to bypass safety system.
+    If ADMIN_API_KEY env var is not set, allow reset without admin key (dev/desktop mode).
+    """
+    admin_key = os.environ.get("ADMIN_API_KEY", "").strip()
+    # Only enforce admin key check if ADMIN_API_KEY is configured
+    if admin_key and x_admin_key != admin_key:
+        raise HTTPException(status_code=403, detail="Admin key required to reset loss counters")
+    from routes.health import bot_status
+    # M6/C16: use the atomic reset method
+    await db.reset_loss_counters()
+    await db.update_settings({'auto_trading_enabled': True})
+    await db.update_runtime_state({'auto_trading_enabled': True})
+    bot_status['auto_trading_enabled'] = True
+    return {"message": "Loss counters reset, trading re-enabled"}
+
+
+# Broker Connection Check
+@router.post("/check-broker-connection")
+async def check_broker_connection():
+    """Check if broker is connected"""
+    from routes.health import bot_status
+    from broker_clients import get_broker_client
+    from models import BrokerType
+
+    settings = await db.get_settings()
+    if not settings:
+        return {"connected": False, "broker": None, "error": "No settings configured"}
+
+    active_broker = settings.get('active_broker', 'ibkr')
+    broker_configs = settings.get('broker_configs', {})
+    broker_config_dict = broker_configs.get(active_broker, {})
+
+    if not broker_config_dict:
+        return {"connected": False, "broker": active_broker, "error": "Broker not configured"}
+
+    # C4: credentials are stored encrypted; decrypt before passing to the broker client
+    from utils.credentials import decrypt_broker_config
+    broker_config_dict = decrypt_broker_config(broker_config_dict)
+
+    try:
+        config = BrokerConfig(broker_type=BrokerType(active_broker), **broker_config_dict)
+        broker_client = get_broker_client(BrokerType(active_broker), config)
+        connected = await broker_client.check_connection()
+        bot_status['broker_connected'] = connected
+        return {"connected": connected, "broker": active_broker}
+    except Exception as e:
+        # M16 fix: never return str(e) directly — exception messages from broker
+        # clients can contain API keys or auth tokens embedded in connection strings.
+        import logging as _log
+        _log.getLogger(__name__).error("Broker connection check failed for %s: %s", active_broker, e)
+        return {"connected": False, "broker": active_broker, "error": "Connection check failed — see server logs for details"}
+
+
+async def check_and_trigger_shutdown(realized_pnl: float):
+    """
+    Check if auto shutdown should be triggered after a losing trade.
+
+    C16 fix: counter increments now go through db.increment_loss_counters() which
+             is a single atomic DB-level UPDATE -- no read-modify-write race.
+    M6  fix: counters are read from db.get_runtime_state(), not the settings blob.
+    """
+    from routes.health import bot_status
+
+    settings = await db.get_settings()
+
+    if not settings.get('auto_shutdown_enabled', False):
+        return None
+
+    # Reset daily counters if the calendar day has rolled over
+    runtime = await db.get_runtime_state()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    if runtime.get('last_loss_reset_date', '') != today:
+        await db.update_runtime_state({
+            'daily_losses': 0,
+            'daily_loss_amount': 0.0,
+            'last_loss_reset_date': today,
+        })
+        runtime['daily_losses'] = 0
+        runtime['daily_loss_amount'] = 0.0
+
+    if realized_pnl < 0:
+        # C16: single atomic increment -- no race between concurrent trades
+        runtime = await db.increment_loss_counters(abs(realized_pnl))
+
+        max_consecutive = settings.get('max_consecutive_losses', 3)
+        max_daily = settings.get('max_daily_losses', 5)
+        max_daily_amount = settings.get('max_daily_loss_amount', 500.0)
+
+        new_consecutive = runtime['consecutive_losses']
+        new_daily = runtime['daily_losses']
+        new_amount = runtime['daily_loss_amount']
+
+        shutdown_reason = None
+        if new_consecutive >= max_consecutive:
+            shutdown_reason = f"Max consecutive losses reached ({new_consecutive}/{max_consecutive})"
+        elif new_daily >= max_daily:
+            shutdown_reason = f"Max daily losses reached ({new_daily}/{max_daily})"
+        elif new_amount >= max_daily_amount:
+            shutdown_reason = f"Max daily loss amount reached (${new_amount:.2f}/${max_daily_amount:.2f})"
+
+        if shutdown_reason:
+            await db.update_runtime_state({
+                'shutdown_triggered': True,
+                'shutdown_reason': shutdown_reason,
+                'auto_trading_enabled': False,
+            })
+            await db.update_settings({'auto_trading_enabled': False})
+            bot_status['auto_trading_enabled'] = False
+            logger.warning("AUTO SHUTDOWN TRIGGERED: %s", shutdown_reason)
+            return shutdown_reason
+    else:
+        # Winning trade resets consecutive counter only
+        await db.update_runtime_state({'consecutive_losses': 0})
+
+    return None

@@ -1,0 +1,424 @@
+"""
+Trading Bot Backend - Refactored with Modular Routes and Database Abstraction
+Main FastAPI server supporting both MongoDB (server) and SQLite (desktop)
+"""
+from fastapi import FastAPI, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from contextlib import asynccontextmanager
+import os
+import logging
+import threading
+from datetime import datetime, timezone
+from typing import List
+import discord
+from discord.ext import commands
+import asyncio
+
+# Import models
+from models import Alert, Settings
+
+# Import utilities
+from utils import parse_alert
+
+# Import new professional features
+from risk import is_duplicate_alert, calculate_position_size, check_correlation
+from notifications import (
+    notify_trade_filled, notify_trade_failed,
+    notify_auto_shutdown, notify_discord_disconnected,
+    notify_correlation_block,
+)
+from fill_monitor import monitor_fill
+
+# Import database abstraction
+from database import init_database, get_db, USE_SQLITE, MongoDBDatabase
+
+# Import routes
+from routes import (
+    health_router, brokers_router, settings_router, 
+    discord_router, profiles_router, trading_router,
+    init_routes, update_bot_status, set_discord_bot
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Database configuration
+MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+DB_NAME = os.environ.get('DB_NAME', 'tradebot')
+SQLITE_PATH = os.environ.get('DATABASE_PATH', 'tradebot.db')
+
+# MongoDB clients (only used if not using SQLite)
+mongo_client = None
+mongo_db = None
+sync_mongo_client = None
+sync_mongo_db = None
+
+if not USE_SQLITE:
+    from motor.motor_asyncio import AsyncIOMotorClient
+    import pymongo
+    mongo_client = AsyncIOMotorClient(MONGO_URL)
+    mongo_db = mongo_client[DB_NAME]
+    sync_mongo_client = pymongo.MongoClient(MONGO_URL)
+    sync_mongo_db = sync_mongo_client[DB_NAME]
+
+# Discord bot reference
+discord_bot = None
+discord_bot_thread = None
+
+
+# Discord Bot Factory
+def create_discord_bot(token: str, channel_ids: List[str]):
+    """Create and configure the Discord bot"""
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.messages = True
+    bot = commands.Bot(command_prefix='!', intents=intents)
+    
+    @bot.event
+    async def on_ready():
+        logger.info(f'Discord bot logged in as {bot.user}')
+        update_bot_status('discord_connected', True)
+    
+    @bot.event
+    async def on_message(message):
+        if message.author == bot.user:
+            return
+        
+        if channel_ids and str(message.channel.id) not in channel_ids:
+            return
+        
+        parsed = parse_alert(message.content)
+        if parsed:
+            # ── Duplicate alert detection ──────────────────────────────────
+            if is_duplicate_alert(parsed):
+                logger.info(
+                    f"[on_message] duplicate alert suppressed within "
+                    f"{60}s window: {parsed.get('ticker')} {parsed.get('alert_type')}"
+                )
+                return
+
+            logger.info(f"Parsed alert: {parsed}")
+            update_bot_status('last_alert_time', datetime.now(timezone.utc).isoformat())
+            
+            from routes.health import bot_status
+            update_bot_status('alerts_processed', bot_status.get('alerts_processed', 0) + 1)
+            
+            alert = Alert(
+                ticker=parsed.get('ticker', ''),
+                strike=parsed.get('strike', 0),
+                option_type=parsed.get('option_type', 'CALL'),
+                expiration=parsed.get('expiration', ''),
+                entry_price=parsed.get('entry_price', 0),
+                alert_type=parsed.get('alert_type', 'buy'),
+                sell_percentage=parsed.get('sell_percentage'),
+                raw_message=message.content
+            )
+            
+            # Use sync database for Discord bot thread
+            if USE_SQLITE:
+                # FIXED C7 note: still bypasses DatabaseInterface abstraction.
+                # Full fix: use asyncio.run_coroutine_threadsafe() with the main loop.
+                from database_sqlite import insert_alert
+                insert_alert(alert.model_dump())
+            else:
+                sync_mongo_db.alerts.insert_one(alert.model_dump())
+            
+            from routes.health import bot_status
+            if bot_status.get('auto_trading_enabled', False):
+                await process_trade(alert, parsed)
+        
+        await bot.process_commands(message)
+    
+    return bot
+
+
+async def process_trade(alert: Alert, parsed: dict):
+    """Process a trade based on parsed alert — with risk sizing, correlation check, fill monitoring."""
+    from models import Trade, Position
+    
+    # Get settings
+    if USE_SQLITE:
+        from database_sqlite import get_settings
+        settings_dict = get_settings()
+    else:
+        settings_doc = sync_mongo_db.settings.find_one({'id': 'main_settings'})
+        settings_dict = settings_doc if settings_doc else {}
+    
+    settings = Settings(**settings_dict) if settings_dict else Settings()
+    settings_raw = settings_dict or {}
+
+    if parsed['alert_type'] == 'buy':
+
+        # ── 1. Risk-based position sizing ─────────────────────────────────────
+        quantity = calculate_position_size(
+            entry_price=alert.entry_price,
+            default_quantity=settings.default_quantity,
+            max_position_size=settings.max_position_size,
+        )
+
+        # ── 2. Correlation / concentration check ─────────────────────────────
+        # We need the async db abstraction here.  In the SQLite path we use
+        # asyncio.get_event_loop() since we're already inside the Discord
+        # bot's own event loop.
+        try:
+            db_for_risk = get_db()
+            allowed, block_reason = await check_correlation(
+                ticker=alert.ticker,
+                db=db_for_risk,
+                settings=settings_raw,
+            )
+        except Exception as e:
+            logger.warning(f"[process_trade] correlation check failed ({e}) — proceeding")
+            allowed, block_reason = True, ""
+
+        if not allowed:
+            logger.warning(f"[process_trade] trade BLOCKED: {block_reason}")
+            await notify_correlation_block(
+                ticker=alert.ticker,
+                open_count=int(block_reason.split()[2]) if block_reason else 0,
+                max_count=int(settings_raw.get("max_positions_per_ticker", 3)),
+                settings=settings_raw,
+            )
+            # Update alert as processed but not executed
+            if USE_SQLITE:
+                from database_sqlite import update_alert
+                update_alert(alert.id, {'processed': True, 'trade_executed': False})
+            else:
+                sync_mongo_db.alerts.update_one(
+                    {'id': alert.id},
+                    {'$set': {'processed': True, 'trade_executed': False}}
+                )
+            return
+
+        # ── 3. Build the trade record ─────────────────────────────────────────
+        trade = Trade(
+            alert_id=alert.id,
+            ticker=alert.ticker,
+            strike=alert.strike,
+            option_type=alert.option_type,
+            expiration=alert.expiration,
+            entry_price=alert.entry_price,
+            quantity=quantity,
+            broker=settings.active_broker.value,
+            simulated=settings.simulation_mode
+        )
+
+        if settings.simulation_mode:
+            # Simulated — no broker call, no fill monitoring needed
+            trade.status = "simulated"
+            trade.executed_at = datetime.now(timezone.utc)
+            logger.info(
+                f"SIMULATED BUY: {trade.quantity}x {trade.ticker} "
+                f"${trade.strike} {trade.option_type} @ ${trade.entry_price:.2f}"
+            )
+            position = Position(
+                ticker=alert.ticker,
+                strike=alert.strike,
+                option_type=alert.option_type,
+                expiration=alert.expiration,
+                entry_price=alert.entry_price,
+                original_quantity=quantity,
+                remaining_quantity=quantity,
+                total_cost=alert.entry_price * quantity * 100,
+                broker=settings.active_broker.value,
+                simulated=True,
+                trade_ids=[trade.id],
+                highest_price=alert.entry_price
+            )
+            if USE_SQLITE:
+                from database_sqlite import insert_trade, insert_position
+                insert_trade(trade.model_dump())
+                insert_position(position.model_dump())
+            else:
+                sync_mongo_db.trades.insert_one(trade.model_dump())
+                sync_mongo_db.positions.insert_one(position.model_dump())
+
+            await notify_trade_filled(
+                trade.id, trade.ticker, trade.strike, trade.option_type,
+                quantity, trade.entry_price, "BUY (SIM)", settings_raw,
+            )
+
+        else:
+            # Real order — place with broker, store as "pending", start fill monitor
+            trade.status = "pending"
+            order_id = None
+            try:
+                from broker_clients import get_broker_client
+                broker_cfg = settings.broker_configs.get(settings.active_broker.value)
+                if broker_cfg:
+                    broker_client = get_broker_client(settings.active_broker, broker_cfg)
+                    order_result = await broker_client.place_order(
+                        ticker=alert.ticker,
+                        strike=alert.strike,
+                        option_type=alert.option_type,
+                        expiration=alert.expiration,
+                        side="BUY",
+                        quantity=quantity,
+                        price=alert.entry_price,
+                    )
+                    order_id = order_result.get("order_id")
+                    trade.order_id = order_id
+                    logger.info(
+                        f"[process_trade] placed order {order_id} for "
+                        f"{quantity}x {alert.ticker} ${alert.strike} {alert.option_type}"
+                    )
+                else:
+                    raise ValueError(f"No broker config for {settings.active_broker.value}")
+            except Exception as e:
+                trade.status = "failed"
+                trade.error_message = str(e)
+                logger.error(f"[process_trade] order placement failed: {e}")
+                await notify_trade_failed(
+                    trade.id, alert.ticker, alert.strike, alert.option_type,
+                    str(e), settings_raw,
+                )
+
+            # Persist the trade (pending or failed)
+            if USE_SQLITE:
+                from database_sqlite import insert_trade
+                insert_trade(trade.model_dump())
+            else:
+                sync_mongo_db.trades.insert_one(trade.model_dump())
+
+            # ── 4. Fill confirmation monitor ───────────────────────────────
+            if trade.status == "pending" and order_id:
+                # Build position record now so it exists for fill monitor to update
+                position = Position(
+                    ticker=alert.ticker,
+                    strike=alert.strike,
+                    option_type=alert.option_type,
+                    expiration=alert.expiration,
+                    entry_price=alert.entry_price,
+                    original_quantity=quantity,
+                    remaining_quantity=quantity,
+                    total_cost=alert.entry_price * quantity * 100,
+                    broker=settings.active_broker.value,
+                    simulated=False,
+                    trade_ids=[trade.id],
+                    highest_price=alert.entry_price
+                )
+                if USE_SQLITE:
+                    from database_sqlite import insert_position
+                    insert_position(position.model_dump())
+                else:
+                    sync_mongo_db.positions.insert_one(position.model_dump())
+
+                try:
+                    db_obj = get_db()
+                    asyncio.create_task(monitor_fill(
+                        trade_id=trade.id,
+                        order_id=order_id,
+                        expected_qty=quantity,
+                        broker_client=broker_client,
+                        db=db_obj,
+                        settings=settings_raw,
+                    ))
+                except Exception as e:
+                    logger.error(f"[process_trade] failed to start fill monitor: {e}")
+
+    # ── Update alert status ───────────────────────────────────────────────────
+    if USE_SQLITE:
+        from database_sqlite import update_alert
+        update_alert(alert.id, {'processed': True, 'trade_executed': True})
+    else:
+        sync_mongo_db.alerts.update_one(
+            {'id': alert.id},
+            {'$set': {'processed': True, 'trade_executed': True}}
+        )
+
+
+def run_discord_bot(token: str, channel_ids: List[str]):
+    """Run the Discord bot in a separate thread"""
+    global discord_bot
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    discord_bot = create_discord_bot(token, channel_ids)
+    set_discord_bot(discord_bot, discord_bot_thread)
+    loop.run_until_complete(discord_bot.start(token))
+
+
+# FastAPI App
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize database abstraction layer
+    if USE_SQLITE:
+        db = init_database(sqlite_path=SQLITE_PATH)
+        logger.info(f"Using SQLite database: {SQLITE_PATH}")
+    else:
+        db = init_database(mongo_db=mongo_db)
+        logger.info(f"Using MongoDB database: {DB_NAME}")
+    
+    # Initialize routes with database abstraction
+    init_routes(db)
+    
+    yield
+    
+    # Cleanup
+    if discord_bot:
+        await discord_bot.close()
+    if mongo_client:
+        mongo_client.close()
+
+
+app = FastAPI(title="Trading Bot API", lifespan=lifespan)
+
+# ── Authentication middleware (C2 fix) ──────────────────────────────────────
+# Set API_KEY env var to a secret string. All requests must include:
+#   X-API-Key: <your-secret>
+# /api/health is exempt so uptime monitors work without a key.
+# If API_KEY is not set, auth is disabled (dev mode) with a warning.
+_API_KEY = os.environ.get("API_KEY", "").strip()
+if not _API_KEY:
+    logger.warning(
+        "API_KEY environment variable is not set — authentication is DISABLED. "
+        "Set API_KEY to a strong random secret before exposing this server."
+    )
+
+_PUBLIC_PATHS = {"/api/health"}  # paths that never require a key
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Always allow CORS preflight through
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        # Skip auth on public paths or when no key is configured (dev mode)
+        if not _API_KEY or request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+        provided = request.headers.get("X-API-Key", "")
+        if provided != _API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key. Set X-API-Key header."},
+            )
+        return await call_next(request)
+
+# FIXED C9: restrict CORS — set ALLOWED_ORIGINS env var (comma-separated)
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+)
+# Auth middleware runs after CORS so preflight responses aren't blocked
+app.add_middleware(APIKeyMiddleware)
+
+# Create main API router and include all sub-routers
+api_router = APIRouter(prefix="/api")
+api_router.include_router(health_router)
+api_router.include_router(brokers_router)
+api_router.include_router(settings_router)
+api_router.include_router(discord_router)
+api_router.include_router(profiles_router)
+api_router.include_router(trading_router)
+
+app.include_router(api_router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
