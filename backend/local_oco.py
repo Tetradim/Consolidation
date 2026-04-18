@@ -355,7 +355,7 @@ def create_local_oco(
 
 def parse_oco_string(oco_str: str) -> OCOConfig:
     """
-    Parse OCO string like DiscordAlertsTrader:
+    Parse OCO string for bracket orders:
     "PT1 50%TS5% SL 50%" 
     
     Format: [PT|STOP]-[X%|[TSX%]] [SL Y%]
