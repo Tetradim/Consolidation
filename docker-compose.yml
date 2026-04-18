@@ -1,0 +1,292 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: tradebot-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-tradebot}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-tradebot123}
+      MONGO_INITDB_DATABASE: ${DB_NAME:-tradebot}
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+      - ./mongodb/init.d:/docker-entrypoint-initdb.d
+    ports:
+      - "27017:27017"
+    networks:
+      - tradebot-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Redis Cache (for sessions, rate limiting)
+  redis:
+    image: redis:7-alpine
+    container_name: tradebot-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - tradebot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tradebot-backend
+    restart: unless-stopped
+    environment:
+      # Database
+      MONGO_URL: mongodb://tradebot:tradebot123@mongodb:27017
+      DB_NAME: tradebot
+      DATABASE_PATH: /data/tradebot.db
+      
+      # Redis
+      REDIS_URL: redis://redis:6379
+      
+      # Discord Bot
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_CHANNEL_IDS: ${DISCORD_CHANNEL_IDS}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      
+      # Broker Settings
+      IBKR_GATEWAY_URL: ${IBKR_GATEWAY_URL:-https://localhost:5000}
+      IBKR_ACCOUNT_ID: ${IBKR_ACCOUNT_ID}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
+      ALPACA_PAPER: ${ALPACA_PAPER:-true}
+      
+      # Server
+      HOST: 0.0.0.0
+      PORT: 8000
+      DEBUG: ${DEBUG:-false}
+      
+      # Security
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      
+      # Sentinel Edge
+      EDGE_HOST: ${EDGE_HOST:-sentinel-edge}
+      EDGE_PORT: ${EDGE_PORT:-8000}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend/data:/data
+      - ./backend/logs:/app/logs
+      - ./backend/.env:/app/.env:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tradebot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Frontend (Next.js Web UI)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        API_URL: ${API_URL:-http://localhost:8000}
+    container_name: tradebot-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:8000}
+      NODE_ENV: production
+    volumes:
+      - ./frontend/.env.production:/app/.env.local:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - tradebot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Sentinel Edge (Market Analysis)
+  sentinel-edge:
+    image: tetradim/sentinel-edge:latest
+    container_name: tradebot-sentinel-edge
+    restart: unless-stopped
+    environment:
+      EDGE_HOST: 0.0.0.0
+      EDGE_PORT: 8000
+      API_KEY: ${EDGE_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - sentinel_data:/data
+      - ./sentinel-edge/config:/config
+    ports:
+      - "8001:8000"
+    networks:
+      - tradebot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: tradebot-nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - nginx_logs:/var/log/nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - tradebot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Prometheus Metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tradebot-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - tradebot-network
+    profiles:
+      - monitoring
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: tradebot-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3030:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - tradebot-network
+    profiles:
+      - monitoring
+
+  # Watchtower (Auto-update containers)
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: tradebot-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_NOTIFICATIONS: "true"
+      WATCHTOWER_NOTIFICATION_URL: ${WATCHTOWER_WEBHOOK:-}
+    networks:
+      - tradebot-network
+    profiles:
+      - maintenance
+
+networks:
+  tradebot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+  redis_data:
+    driver: local
+  sentinel_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
