@@ -4,13 +4,7 @@
  * Complete risk management configuration page
  */
 import React, { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
-import { Slider } from '@/components/ui/slider';
-import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { View, Text, TextInput, Switch, Button, ScrollView, TouchableOpacity } from 'react-native';
 
 type TabType = 'position' | 'stoploss' | 'takeprofit' | 'trailing' | 'shutdown' | 'correlation';
 

@@ -33,7 +33,7 @@ export function DiscordSettingsPage() {
     sellKeywords: 'SELL,EXIT,CLOSE,STC,TRIM',
     avgDownKeywords: 'AVERAGE DOWN,AVG DOWN,AVERAGING,ADD TO',
     ignoreKeywords: 'WATCHLIST,WATCHING,MIGHT,PAPER',
-    tickerPattern: r'\$([A-Z]{1,5})\b',
+    tickerPattern: '\\$([A-Z]{1,5})\\b',
     requireTicker: true,
     requireExpiration: true,
     requirePrice: true,
